@@ -1,12 +1,9 @@
 /**
  * NeuroAI Initiative — motif animation
  *
- * A field of nodes that slowly morphs between two states:
- *   organic  — loose, drifting clusters  (biological / neural)
- *   grid     — precise regular lattice   (computational / digital)
- *
- * The continuous oscillation between these two arrangements
- * is the visual metaphor: the exchange between neuro and AI.
+ * Nodes begin in loose organic clusters (biological / neural),
+ * then slowly converge into a precise regular grid (computational / digital),
+ * then dissolve back. The oscillation is the metaphor: neuro ↔ AI.
  */
 (function () {
   'use strict';
@@ -19,13 +16,30 @@
   const COLS        = 8;
   const ROWS        = 7;
   const N           = COLS * ROWS;       // 56 nodes
-  const CYCLE_MS    = 48000;             // one full organic→grid→organic cycle
-  const DOT_RADIUS  = 1.1;              // px
-  const DOT_ALPHA   = 0.18;
-  const LINE_ALPHA  = 0.09;             // max connection opacity
-  const DIST_THRESH = 0.18;             // normalized connection distance cutoff
-  const DRIFT_SPEED = 0.00012;          // how fast organic positions wander
-  const CREAM       = '245, 240, 227';  // rgb, matches --cream
+  const CYCLE_MS    = 36000;             // organic → grid → organic cycle (36s)
+  const DOT_RADIUS  = 1.5;
+  const DOT_ALPHA   = 0.3;
+  const LINE_ALPHA  = 0.16;
+  const DIST_THRESH = 0.19;
+  const DRIFT_SPEED = 0.00010;
+  const CREAM       = '248, 243, 230';
+
+  // Organic-mode cluster centers. Particles are seeded near one
+  // of these, producing clearly biological groupings before alignment.
+  const CLUSTERS = [
+    { cx: 0.28, cy: 0.38 },
+    { cx: 0.72, cy: 0.28 },
+    { cx: 0.52, cy: 0.72 },
+  ];
+
+  // ── Helpers ──────────────────────────────────────────────────
+  function rand()            { return Math.random(); }
+  function lerp(a, b, t)    { return a + (b - a) * t; }
+  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
+
+  function easeInOut(t) {
+    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+  }
 
   // ── Particle ─────────────────────────────────────────────────
   class Particle {
@@ -33,57 +47,46 @@
       const col = index % COLS;
       const row = Math.floor(index / COLS);
 
-      // Exact grid position, normalized 0-1
+      // Precise grid position (normalized 0–1)
       this.gx = (col + 1) / (COLS + 1);
       this.gy = (row + 1) / (ROWS + 1);
 
-      // Organic starting position: scatter from grid with seeded variation
-      const scatter = 0.45;
-      this.ox = clamp(this.gx + (rand() - 0.5) * scatter, 0.03, 0.97);
-      this.oy = clamp(this.gy + (rand() - 0.5) * scatter, 0.03, 0.97);
+      // Organic starting position: cluster-biased scatter
+      const cluster = CLUSTERS[index % CLUSTERS.length];
+      const spread  = 0.28 + rand() * 0.14;
+      this.ox = clamp(cluster.cx + (rand() - 0.5) * spread, 0.04, 0.96);
+      this.oy = clamp(cluster.cy + (rand() - 0.5) * spread, 0.04, 0.96);
 
-      // Slow drift velocity
+      // Slow drift velocity in organic state
       this.vx = (rand() - 0.5) * DRIFT_SPEED;
       this.vy = (rand() - 0.5) * DRIFT_SPEED;
 
-      // Per-particle opacity variation for depth
-      this.opacityScale = 0.6 + rand() * 0.4;
+      // Per-particle opacity for depth variation
+      this.alpha = 0.55 + rand() * 0.45;
 
-      // Rendered position (updated each frame)
+      // Current rendered position
       this.x = this.ox;
       this.y = this.oy;
     }
 
     update(morphT) {
-      // Drift the organic anchor slowly
+      // Drift organic anchor
       this.ox += this.vx;
       this.oy += this.vy;
+      if (this.ox < 0.04 || this.ox > 0.96) this.vx *= -1;
+      if (this.oy < 0.04 || this.oy > 0.96) this.vy *= -1;
 
-      // Soft boundary reflection
-      if (this.ox < 0.03 || this.ox > 0.97) this.vx *= -1;
-      if (this.oy < 0.03 || this.oy > 0.97) this.vy *= -1;
-
-      // Interpolate between organic and grid state
+      // Interpolate: organic ↔ grid
       this.x = lerp(this.ox, this.gx, morphT);
       this.y = lerp(this.oy, this.gy, morphT);
     }
-  }
-
-  // ── Utilities ────────────────────────────────────────────────
-  function rand()           { return Math.random(); }
-  function lerp(a, b, t)   { return a + (b - a) * t; }
-  function clamp(v, lo, hi) { return v < lo ? lo : v > hi ? hi : v; }
-
-  // Smooth ease in-out for the morphT oscillation
-  function easeInOut(t) {
-    return t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
   }
 
   // ── State ────────────────────────────────────────────────────
   let W, H;
   let needsResize = true;
   let startTime   = null;
-  const particles = [];
+  const particles = Array.from({ length: N }, (_, i) => new Particle(i));
 
   function resize() {
     W = canvas.width  = canvas.offsetWidth;
@@ -91,39 +94,28 @@
     needsResize = false;
   }
 
-  function init() {
-    resize();
-    for (let i = 0; i < N; i++) particles.push(new Particle(i));
-  }
-
   // ── Render loop ──────────────────────────────────────────────
   function frame(ts) {
     requestAnimationFrame(frame);
-
     if (needsResize) resize();
+    if (!W || !H) return;
     if (!startTime) startTime = ts;
 
     const elapsed = ts - startTime;
-
-    // morphT: 0 = organic, 1 = grid, oscillates via sine
-    const phase  = (elapsed % CYCLE_MS) / CYCLE_MS;         // 0 → 1
-    const sine   = (Math.sin(phase * Math.PI * 2 - Math.PI / 2) + 1) / 2; // 0 → 1 → 0
-    const morphT = easeInOut(sine);
+    const phase   = (elapsed % CYCLE_MS) / CYCLE_MS;
+    const sine    = (Math.sin(phase * Math.PI * 2 - Math.PI / 2) + 1) / 2;
+    const morphT  = easeInOut(sine);
 
     ctx.clearRect(0, 0, W, H);
 
-    // Update all particles
     particles.forEach(p => p.update(morphT));
 
-    // ── Draw connections ──────────────────────────────────────
-    // Batch into a single path per opacity would be ideal,
-    // but with N=56 (~120 live pairs) direct draw is fine.
+    // Connections
     for (let i = 0; i < N; i++) {
       for (let j = i + 1; j < N; j++) {
-        const pi = particles[i];
-        const pj = particles[j];
+        const pi = particles[i], pj = particles[j];
         const dx = pi.x - pj.x;
-        const dy = (pi.y - pj.y) * (W / H);  // correct for canvas aspect
+        const dy = (pi.y - pj.y) * (W / H);
         const dist = Math.sqrt(dx * dx + dy * dy);
         if (dist >= DIST_THRESH) continue;
 
@@ -137,18 +129,17 @@
       }
     }
 
-    // ── Draw nodes ────────────────────────────────────────────
+    // Nodes
     particles.forEach(p => {
-      const alpha = DOT_ALPHA * p.opacityScale;
       ctx.beginPath();
       ctx.arc(p.x * W, p.y * H, DOT_RADIUS, 0, Math.PI * 2);
-      ctx.fillStyle = `rgba(${CREAM}, ${alpha})`;
+      ctx.fillStyle = `rgba(${CREAM}, ${DOT_ALPHA * p.alpha})`;
       ctx.fill();
     });
   }
 
   // ── Boot ─────────────────────────────────────────────────────
   window.addEventListener('resize', () => { needsResize = true; });
-  init();
+  resize();
   requestAnimationFrame(frame);
 })();
